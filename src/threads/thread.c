@@ -195,6 +195,13 @@ tid_t thread_create(const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock(t);
+  // modified
+  /* Preempt the current thread if the new thread has a higher priority. */
+  if (t->priority > thread_current()->priority)
+  {
+    thread_yield(); // Yield to the new higher-priority thread.
+  }
+  // modified
 
   return tid;
 }
@@ -222,18 +229,46 @@ void thread_block(void)
    be important: if the caller had disabled interrupts itself,
    it may expect that it can atomically unblock a thread and
    update other data. */
+// void thread_unblock(struct thread *t)
+// {
+//   enum intr_level old_level;
+
+//   ASSERT(is_thread(t));
+
+//   old_level = intr_disable();
+//   ASSERT(t->status == THREAD_BLOCKED);
+//   list_push_back(&ready_list, &t->elem);
+//   t->status = THREAD_READY;
+//   intr_set_level(old_level);
+// }
+
+// modified
+bool thread_priority_comparator(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  const struct thread *t1 = list_entry(a, struct thread, elem);
+  const struct thread *t2 = list_entry(b, struct thread, elem);
+  return t1->priority > t2->priority;
+}
+
 void thread_unblock(struct thread *t)
 {
-  enum intr_level old_level;
-
-  ASSERT(is_thread(t));
-
-  old_level = intr_disable();
+  enum intr_level old_level = intr_disable();
   ASSERT(t->status == THREAD_BLOCKED);
-  list_push_back(&ready_list, &t->elem);
+
+  // Insert the thread into the ready list in sorted order.
+  list_insert_ordered(&ready_list, &t->elem, thread_priority_comparator, NULL);
   t->status = THREAD_READY;
+
+  // Preempt the current thread if the unblocked thread has higher priority.
+  if (t->priority > thread_current()->priority && !intr_context())
+  {
+    thread_yield();
+  }
+
   intr_set_level(old_level);
 }
+
+// modified
 
 /* Returns the name of the running thread. */
 const char *
@@ -289,6 +324,21 @@ void thread_exit(void)
 
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
+// void thread_yield(void)
+// {
+//   struct thread *cur = thread_current();
+//   enum intr_level old_level;
+
+//   ASSERT(!intr_context());
+
+//   old_level = intr_disable();
+//   if (cur != idle_thread)
+//     list_push_back(&ready_list, &cur->elem);
+//   cur->status = THREAD_READY;
+//   schedule();
+//   intr_set_level(old_level);
+// }
+// modified
 void thread_yield(void)
 {
   struct thread *cur = thread_current();
@@ -298,11 +348,15 @@ void thread_yield(void)
 
   old_level = intr_disable();
   if (cur != idle_thread)
-    list_push_back(&ready_list, &cur->elem);
+  {
+    // Insert the current thread in the ready list in priority order.
+    list_insert_ordered(&ready_list, &cur->elem, thread_priority_comparator, NULL);
+  }
   cur->status = THREAD_READY;
-  schedule();
+  schedule(); // Switch to the next thread.
   intr_set_level(old_level);
 }
+// modified
 
 /* Invoke function 'func' on all threads, passing along 'aux'.
    This function must be called with interrupts off. */
@@ -321,17 +375,39 @@ void thread_foreach(thread_action_func *func, void *aux)
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
+// void thread_set_priority(int new_priority)
+// {
+//   thread_current()->priority = new_priority;
+// }
+
+// /* Returns the current thread's priority. */
+// int thread_get_priority(void)
+// {
+//   return thread_current()->priority;
+// }
+
+// modified
 void thread_set_priority(int new_priority)
 {
-  thread_current()->priority = new_priority;
-}
+  struct thread *current = thread_current();
+  current->base_priority = new_priority;
+  current->priority = new_priority;
 
-/* Returns the current thread's priority. */
+  // Yield if there's a higher-priority thread waiting.
+  if (!list_empty(&ready_list))
+  {
+    struct thread *highest = list_entry(list_front(&ready_list), struct thread, elem);
+    if (highest->priority > new_priority)
+    {
+      thread_yield();
+    }
+  }
+}
 int thread_get_priority(void)
 {
   return thread_current()->priority;
 }
-
+// modified
 /* Sets the current thread's nice value to NICE. */
 void thread_set_nice(int nice UNUSED)
 {

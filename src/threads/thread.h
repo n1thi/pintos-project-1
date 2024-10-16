@@ -93,6 +93,11 @@ struct thread
    /* Shared between thread.c and synch.c. */
    struct list_elem elem; /* List element. */
 
+   // modified
+   int base_priority;            // Base priority (before donation).
+   struct list donated_to;       // List of threads this thread donates to.
+   struct lock *waiting_on_lock; // Lock this thread is waiting on.
+   // modified
 #ifdef USERPROG
    /* Owned by userprog/process.c. */
    uint32_t *pagedir; /* Page directory. */

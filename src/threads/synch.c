@@ -183,15 +183,37 @@ void lock_init(struct lock *lock)
    interrupt handler.  This function may be called with
    interrupts disabled, but interrupts will be turned back on if
    we need to sleep. */
+// void lock_acquire(struct lock *lock)
+// {
+//   ASSERT(lock != NULL);
+//   ASSERT(!intr_context());
+//   ASSERT(!lock_held_by_current_thread(lock));
+
+//   sema_down(&lock->semaphore);
+//   lock->holder = thread_current();
+// }
+
+// modified
 void lock_acquire(struct lock *lock)
 {
   ASSERT(lock != NULL);
   ASSERT(!intr_context());
   ASSERT(!lock_held_by_current_thread(lock));
 
+  struct thread *current = thread_current();
+
+  // If lock is held, perform priority donation.
+  if (lock->holder != NULL && lock->holder->priority < current->priority)
+  {
+    lock->holder->priority = current->priority;
+    current->waiting_on_lock = lock;
+  }
+
   sema_down(&lock->semaphore);
-  lock->holder = thread_current();
+  lock->holder = current;
+  current->waiting_on_lock = NULL; // Clear waiting status.
 }
+// modified
 
 /* Tries to acquires LOCK and returns true if successful or false
    on failure.  The lock must not already be held by the current
@@ -217,14 +239,30 @@ bool lock_try_acquire(struct lock *lock)
    An interrupt handler cannot acquire a lock, so it does not
    make sense to try to release a lock within an interrupt
    handler. */
+// void lock_release(struct lock *lock)
+// {
+//   ASSERT(lock != NULL);
+//   ASSERT(lock_held_by_current_thread(lock));
+
+//   lock->holder = NULL;
+//   sema_up(&lock->semaphore);
+// }
+
+// modified
 void lock_release(struct lock *lock)
 {
   ASSERT(lock != NULL);
   ASSERT(lock_held_by_current_thread(lock));
 
+  struct thread *holder = lock->holder;
+
+  // Reset the priority to the base priority.
+  holder->priority = holder->base_priority;
+
   lock->holder = NULL;
   sema_up(&lock->semaphore);
 }
+// modified
 
 /* Returns true if the current thread holds LOCK, false
    otherwise.  (Note that testing whether some other thread holds
