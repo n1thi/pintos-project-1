@@ -94,6 +94,8 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
+    int64_t wake_time;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -147,6 +149,8 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+bool thread_wake_time_less(const struct list_elem *a, const struct list_elem *b, void *aux);
 
 /* Used for THREAD FOR EACH in timer.c. */
 void try_thread_yield (void);

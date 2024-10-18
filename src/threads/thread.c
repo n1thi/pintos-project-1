@@ -609,6 +609,13 @@ try_thread_yield (void)
 	thread_yield (); 
 }
 
+bool thread_wake_time_less(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  struct thread *t_a = list_entry(a, struct thread, elem);
+  struct thread *t_b = list_entry(b, struct thread, elem);
+  return t_a->wake_time < t_b->wake_time;
+}
+
 bool
 compare_threads_by_priority (const struct list_elem *a,
                              const struct list_elem *b,
