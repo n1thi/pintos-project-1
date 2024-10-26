@@ -596,8 +596,7 @@ allocate_tid (void)
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 
-void
-try_thread_yield (void)
+void try_thread_yield (void)
 {
   enum intr_level old_level = intr_disable ();
   bool result = !list_empty (&ready_list) &&
@@ -616,53 +615,69 @@ bool thread_wake_time_less(const struct list_elem *a, const struct list_elem *b,
   return t_a->wake_time < t_b->wake_time;
 }
 
-bool
-compare_threads_by_priority (const struct list_elem *a,
-                             const struct list_elem *b,
-                             void *aux UNUSED)
-{
-  return list_entry (a, struct thread, elem)->priority <=
-         list_entry (b, struct thread, elem)->priority;
+bool compare_threads_by_priority(const struct list_elem *first_elem, 
+                                 const struct list_elem *second_elem, 
+                                 void *aux UNUSED) {
+    // Compare the priorities of two threads
+    struct thread *first_thread = list_entry(first_elem, struct thread, elem);
+    struct thread *second_thread = list_entry(second_elem, struct thread, elem);
+    return first_thread->priority <= second_thread->priority;
 }
 
-void
-try_awaking_thread(struct thread *t, void *aux UNUSED)
-{
-  if (t->status == THREAD_BLOCKED && t->remaining_time_to_wake_up > 0)
-    {
-      t->remaining_time_to_wake_up--;
-	  if (t->remaining_time_to_wake_up <= 0)
-	    thread_unblock(t);
-	}
+void try_awaking_thread(struct thread *current_thread, void *aux UNUSED) {
+    // Check if the thread is blocked and reduce its wake-up time
+    if (current_thread->status == THREAD_BLOCKED && current_thread->remaining_time_to_wake_up > 0) {
+        current_thread->remaining_time_to_wake_up--;
+
+        // Unblock the thread if its wake-up time has reached zero
+        if (current_thread->remaining_time_to_wake_up <= 0) {
+            thread_unblock(current_thread);
+        }
+    }
 }
 
-void
-thread_update_priority (struct thread *t)
-{
-  enum intr_level old_level = intr_disable ();
-  int real_priority = t->real_priority;
-  
-  if (list_empty (&t->locks_held))
-    t->priority = real_priority;
-  else
-    {
-	  int lock_priority = list_entry (list_max (&t->locks_held,
-                                      compare_locks_by_priority, NULL),
-					                  struct lock, elem)->max_priority;
-      t->priority = real_priority > lock_priority ?
-	                real_priority : lock_priority;
-	} 
-  intr_set_level (old_level);
+void thread_update_priority(struct thread *current_thread) {
+    // Disable interrupts to prevent race conditions
+    enum intr_level previous_level = intr_disable();
+
+    // Get the base priority of the thread
+    int base_priority = current_thread->real_priority;
+
+    if (list_empty(&current_thread->locks_held)) {
+        // Set the thread's priority to its base priority if no locks are held
+        current_thread->priority = base_priority;
+    } else {
+        // Find the highest lock priority among held locks
+        struct lock *highest_priority_lock = list_entry(
+            list_max(&current_thread->locks_held, compare_locks_by_priority, NULL),
+            struct lock, elem
+        );
+
+        int highest_lock_priority = highest_priority_lock->max_priority;
+
+        // Set the thread's priority to the higher of its base priority or the highest lock priority
+        current_thread->priority = (base_priority > highest_lock_priority) 
+                                    ? base_priority 
+                                    : highest_lock_priority;
+    }
+
+    // Restore the previous interrupt level
+    intr_set_level(previous_level);
 }
 
-void
-thread_ready_rearrange (struct thread *t)
-{
-  ASSERT (t->status == THREAD_READY);
-  
-  enum intr_level old_level = intr_disable ();
-  list_remove (&t->elem);
-  list_insert_ordered (&ready_list, &t->elem,
-                       compare_threads_by_priority, NULL);
-  intr_set_level (old_level);
+void thread_ready_rearrange(struct thread *current_thread) {
+    // Ensure the thread is in the ready state
+    ASSERT(current_thread->status == THREAD_READY);
+
+    // Disable interrupts to modify the ready list safely
+    enum intr_level previous_level = intr_disable();
+
+    // Remove the thread from its current position in the ready list
+    list_remove(&current_thread->elem);
+
+    // Reinsert the thread into the ready list in priority order
+    list_insert_ordered(&ready_list, &current_thread->elem, compare_threads_by_priority, NULL);
+
+    // Restore the previous interrupt level
+    intr_set_level(previous_level);
 }
