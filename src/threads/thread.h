@@ -112,6 +112,10 @@ struct thread
 	struct list locks_held;
 	
 	struct lock *current_lock;
+
+   int nice;         // Nice value (-20 to 20).
+
+   int recent_cpu;   // Recent CPU usage (fixed-point arithmetic).
   };
 
 /* If false (default), use round-robin scheduler.
@@ -164,5 +168,9 @@ bool compare_threads_by_priority (const struct list_elem *,
 void thread_update_priority (struct thread *);
 
 void thread_ready_rearrange (struct thread *);
+
+void update_load_avg(void);
+
+void update_recent_cpu(struct thread *t, void *aux);
 
 #endif /* threads/thread.h */
