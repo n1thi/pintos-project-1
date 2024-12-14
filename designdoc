@@ -8,9 +8,9 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+Nithi Jangidi      <nithired@buffalo.edu>
+Sai Akash Sunku    <saiakash@buffalo.edu>
+Pavanth Nimmagadda <pavanthn@buffalo.edu>
 
 ---- PRELIMINARIES ----
 
@@ -91,29 +91,36 @@ Alternative designs, such as using semaphores for each thread, were considered, 
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-/* New members added to struct thread */
-struct thread {
-  int base_priority;         // Base priority of the thread before any donation.
-  int effective_priority;    // Current effective priority, potentially increased due to donation.
-  struct lock *waiting_lock; // The lock the thread is waiting on, used for priority donation.
-  struct list donations;     // List of threads that have donated their priority to this thread.
-};
+// In struct thread (thread.h)
+int real_priority;        // The original priority of the thread (before any donation). 
+struct lock *current_lock; // The lock the thread is currently trying to acquire.
+struct list locks_held;    // List of locks held by this thread.
 
-/* New members added to struct lock */
-struct lock {
-  struct thread *holder;     // The thread currently holding this lock.
-  struct list_elem elem;     // List element for tracking waiting threads in priority order.
-};
+// In struct lock (synch.h)
+int max_priority;         // The highest priority among threads waiting for this lock.
 
-base_priority: Stores the thread's original priority.
-effective_priority: The current priority, which may have been increased by donation.
-waiting_lock: Tracks the lock the thread is waiting for to enable nested donation.
-donations: A list of threads that have donated their priority to this thread.
-holder: Stores the thread currently holding a specific lock.
+// In struct semaphore_elem (synch.c)
+int priority;             // Priority of the thread waiting on this semaphore.
+
+// Global Variables (thread.c)
+static struct list ready_list;  // List of threads ready to run.
+
 
 >> B2: Explain the data structure used to track priority donation.
 >> Use ASCII art to diagram a nested donation.  (Alternately, submit a
 >> .png file.)
+
+Thread structure (struct thread):
+
+Each thread maintains a waiting_for_lock pointer to indicate the lock it is waiting for.
+The locks_held list stores the locks currently held by the thread.
+Lock structure (struct lock):
+
+Each lock stores the max_priority of the highest-priority thread waiting on it.
+Lists for synchronization:
+
+The semaphore.waiters list inside a lock stores threads waiting for the lock, ordered by priority.
+These structures allow nested donation to propagate through multiple locks and threads.
 
 +--------------------+     +--------------------+     +--------------------+
 |   Thread A         |     |   Thread B         |     |   Thread C         |
@@ -128,57 +135,75 @@ holder: Stores the thread currently holding a specific lock.
 |   Held by Thread B |     |   Held by Thread C |     |                    |
 +--------------------+     +--------------------+     +--------------------+
 
-Donation Path: Thread A donates priority to Thread B → Thread B donates priority to Thread C.
-
+Thread A (priority 63) tries to acquire Lock 1, held by Thread B (priority 31).
+Thread B's priority is boosted to 63 through priority donation.
+Thread B (now priority 63) tries to acquire Lock 2, held by Thread C (priority 15).
+Thread C's priority is also boosted to 63 through nested donation.
 
 ---- ALGORITHMS ----
 
 >> B3: How do you ensure that the highest priority thread waiting for
 >> a lock, semaphore, or condition variable wakes up first?
-I use a priority queue mechanism. The ready list and the waiting lists (for locks and condition variables) are 
-implemented using Pintos list functions, but are sorted by the effective priority of the threads. This ensures that 
-the highest priority thread is always at the front of the list, ready to be scheduled or to wake up first when resources 
-become available.
+Wait List Management:
+Each semaphore maintains a list of waiting threads in the waiters list.
+When a thread waits on a semaphore, it is inserted into this list in priority order
+This ensures that the thread with the highest priority is always at the end of the list (ready to be popped).
+
+Unblocking the Highest Priority Thread:
+When sema_up() is called, the highest-priority thread is chosen.
+The highest-priority thread is then unblocked and added to the ready list.
+This ensures that the highest-priority thread is the first to wake up.
 
 >> B4: Describe the sequence of events when a call to lock_acquire()
 >> causes a priority donation.  How is nested donation handled?
 
-1. Thread A tries to acquire a lock held by Thread B.
-2. Thread A realizes that Thread B has a lower priority, and so Thread A donates its priority to Thread B.
-3. Thread B's effective priority is updated to 63, and it continues running with the donated priority.
-4. If Thread B is waiting on another lock held by Thread C, the donation is propagated, and Thread C receives the highest priority in the chain.
-5. This nested donation continues until the entire chain of dependencies is resolved.
+When lock_acquire() causes priority donation, the following sequence occurs:
+Current thread marks the lock in its current_lock field, checks if lock is held
+If held, compares priorities - if current thread's priority is higher, starts donation chain
+Follows chain through current_lock pointers, updating each holder's priority to donated value
+Continues chain if lock holder is waiting on another lock (nested donation), stops when no more locks
+When locks release, priorities are recalculated based on remaining held locks and original priority
 
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
-1. Thread B (Priority 63, donated from Thread A) releases a lock.
-2. Thread A no longer needs to donate its priority, so Thread B’s effective priority is recalculated.
-3. The recalculation restores Thread B's base priority (31), unless there are other pending donations from other threads.
-4. Thread A (Priority 63) is placed back on the ready list and immediately scheduled to run if it has the highest priority.
+
+When lock_release() is called on a lock with a waiting higher-priority thread:
+Lock is removed from the releasing thread's locks_held list
+Thread's priority is restored to highest remaining donated priority or original priority
+Lock's holder is set to NULL and waiting thread is unblocked from semaphore
+Unblocked higher-priority thread becomes ready and gets scheduled due to thread_yield
 
 ---- SYNCHRONIZATION ----
 
 >> B6: Describe a potential race in thread_set_priority() and explain
 >> how your implementation avoids it.  Can you use a lock to avoid
 >> this race?
-A race condition could occur if a thread changes its priority while it is being preempted or while priority donation is taking place. 
-For example, if a thread lowers its priority while holding a lock, it could incorrectly yield the CPU to a lower-priority thread, disrupting the system.
+Potential Race:
+A thread's priority could change while it is blocked on a lock, and priority donation could happen
+simultaneously, causing an inconsistent state.
 
-To avoid this, I disable interrupts while updating the priority. This ensures atomic access to the priority-related fields. 
-Using a lock here would be counterproductive because locks themselves are subject to priority inversion, which we are trying to manage with priority donation. 
-Disabling interrupts ensures that no other thread can interfere with priority changes.
+Solution:
+The interrupts are disabled during priority updates to prevent race conditions.
+Locks cannot be used to avoid this race since priority changes and donations can occur within interrupt handlers.
 
 ---- RATIONALE ----
 
 >> B7: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
-This design effectively handles both basic priority scheduling and priority donation with minimal overhead. 
-By using a priority-sorted ready list and waiting lists, I ensure that the highest-priority thread is always chosen to run. 
-The donation mechanism prevents priority inversion and ensures that critical threads can proceed without being blocked by lower-priority ones.
+Chosen Design:
+Priority donation ensures that higher-priority threads do not get blocked indefinitely by lower-priority threads, preventing priority inversion.
+The use of ordered lists ensures that the highest-priority thread always gets unblocked first.
+Advantages:
 
-An alternative design could involve more complex data structures, such as heaps, but this would introduce additional computational overhead during insertion
-and removal from the ready list. My design uses Pintos existing list functions, making it simpler and more efficient while still fulfilling the 
-priority scheduling requirements. Additionally, the use of interrupt disabling for synchronization is lightweight compared to more complex locking mechanisms.
+Efficiency: This design avoids complex data structures, making it easier to manage locks and semaphores.
+Scalability: Handles nested donations across multiple locks seamlessly.
+Simplicity: Integrates well with existing synchronization primitives in Pintos.
+
+Alternative Considered:
+
+An explicit dependency graph to track priority inheritance was considered, but it was rejected because it introduced
+significant complexity and overhead.
+
 
 			  ADVANCED SCHEDULER
 			  ==================
@@ -189,20 +214,22 @@ priority scheduling requirements. Additionally, the use of interrupt disabling f
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-/* New members added to struct thread */
-struct thread {
-  int niceness;            // Represents the niceness value of the thread, affecting its priority.
-  int recent_cpu;          // Tracks the recent CPU usage of the thread.
-  int priority;            // Computed priority of the thread based on the scheduler.
-};
 
-/* Global variables */
-int load_avg;              // Tracks the system-wide load average for calculating priorities.
+recent_cpu (struct thread) : Stores the recent CPU usage by the thread, used in the MLFQ scheduler to adjust priority (in fixed-point arithmetic).
 
-niceness: Determines the favorability of the thread's access to CPU resources.
-recent_cpu: Keeps track of how much CPU time the thread has recently used.
-priority: Represents the dynamically calculated priority of a thread in the MLFQ scheduler.
-load_avg: Global value that indicates how many threads are ready to run.
+nice (struct thread): Represents how "nice" the thread is. A higher value lowers the thread’s priority, influencing scheduling decisions.
+
+load_avg (global/static variable): Stores the system-wide load average, reflecting the average number of ready threads over time.
+
+F (macro): Defines the scaling factor for 17.14 fixed-point arithmetic (2^14), which simplifies floating-point operations using integers.
+
+Fixed-point arithmetic macros:
+
+INT_TO_FP(n): Converts an integer to a fixed-point value.
+FP_TO_INT_ZERO(x): Converts a fixed-point value to an integer by truncation.
+FP_TO_INT_NEAREST(x): Converts a fixed-point value to the nearest integer.
+MUL_FP(x, y): Multiplies two fixed-point numbers.
+DIV_FP(x, y): Divides one fixed-point number by another.
 
 ---- ALGORITHMS ----
 
@@ -211,35 +238,52 @@ load_avg: Global value that indicates how many threads are ready to run.
 >> scheduling decision and the priority and recent_cpu values for each
 >> thread after each given number of timer ticks:
 
-timer  recent_cpu    priority   thread
-ticks   A   B   C   A   B   C   to run
------  --  --  --  --  --  --   ------
- 0		0	0	0	31	30	29	  A
- 4		1	0	0	30	30	29	  A
- 8		2	0	0	30	30	29	  A
- 12		3	0	0	30	30	29	  A
- 16		4	1	0	29	30	29	  B
- 20		4	2	0	29	30	29	  B
- 24		4	3	0	29	30	29	  B
- 28		4	4	1	29	29	29	  C
- 32		4	4	2	29	29	28	  C
- 36		4	4	3	29	29	28	  C
- 
+Priority = PRI_MAX(63) - (recent_cpu/4) - (nice*2)
+recent_cpu is in fixed-point format and is incremented by F(1<<14) each tick for the running thread
+Priorities are recalculated every 4 ticks
+
+Initial state:
+
+All threads start with recent_cpu = 0
+Thread A: nice = 0
+Thread B: nice = 1
+Thread C: nice = 2
+
+Here's the table:
+Timer  Recent_CPU    Priority   Recent_CPU    Priority   Recent_CPU    Priority   Thread
+Ticks    A             A          B            B          C            C         to run
+-----  ----------  ----------  -----------  ----------  -----------  ----------  --------
+ 0      0            63         0            61         0            59         A
+ 4      4F           62         0            61         0            59         A
+ 8      8F           61         0            61         0            59         A
+12      12F          60         0            61         0            59         B
+16      12F          60         4F           60         0            59         B
+20      12F          60         8F           59         0            59         A
+24      16F          59         8F           59         0            59         A
+28      16F          59         12F          58         0            59         C
+
+F represents the fixed-point factor (1<<14).
+For each 4 ticks:
+The running thread's recent_cpu increases by 4F
+The priority calculation is recalculated for all threads
+The thread with highest priority runs next
+If priorities are equal, they would be scheduled round-robin
 
 >> C3: Did any ambiguities in the scheduler specification make values
 >> in the table uncertain?  If so, what rule did you use to resolve
 >> them?  Does this match the behavior of your scheduler?
-One potential ambiguity is the timing of priority recalculations and when to switch to another
-thread after recalculating priorities. I resolved this by recalculating thread priorities every fourth
-tick and checking if a higher-priority thread is available to run. This matches the expected behavior 
-of my scheduler.
+The main ambiguity is how to handle priority ties, which my code resolves through the ready list
+ordering using list_insert_ordered() with compare_threads_by_priority(). Another ambiguity is fixed-point rounding,
+which my code handles consistently by using FP_TO_INT_ZERO for priority calculations, always rounding toward zero. These both match
+the scheduler's actual behavior, with priority recalculations happening exactly every 4 ticks for all threads simultaneously.
 
 >> C4: How is the way you divided the cost of scheduling between code
 >> inside and outside interrupt context likely to affect performance?
-In my implementation, most of the CPU load calculation and priority recalculation happens
-inside the timer interrupt handler to ensure frequent updates. This might slightly increase interrupt
-handling overhead, but it ensures accurate scheduling. By limiting recalculations to key intervals (e.g., every second or tick), 
-I avoid excessive recalculations.
+In my implementation, we handles heavy computations outside interrupt context where possible. 
+For example, thread priority updates and comparisons happen in thread_update_priority and compare_threads_by_priority. 
+The interrupt context (thread_tick) only handles essential bookkeeping like incrementing recent_cpu and checking if it's time to update 
+priorities/load_avg. By minimizing work in interrupt context, the system can quickly respond to new interrupts, improving overall system responsiveness
+and performance.
 
 ---- RATIONALE ----
 
@@ -248,14 +292,20 @@ I avoid excessive recalculations.
 >> time to work on this part of the project, how might you choose to
 >> refine or improve your design?
 
-Advantages: My design ensures fairness by recalculating thread priorities based on CPU usage and 
-system load. By adjusting priorities frequently, threads with less CPU usage can preempt CPU-heavy threads.
+Advantages:
+Clear fixed-point arithmetic implementation with well-defined macros, making calculations precise and readable
+Efficient priority management using list_insert_ordered() to maintain sorted ready list
+Split load between interrupt and non-interrupt contexts appropriately
 
-Disadvantages: The use of fixed-point arithmetic introduces complexity, and recalculating thread
-priorities during the timer interrupt could slightly affect performance.
+Disadvantages:
+Using thread_foreach() for priority updates may be inefficient for large number of threads since it updates all threads, even blocked ones
+Fixed-point arithmetic could potentially overflow with very large values
+No caching of priority calculations, recalculating every 4 ticks even if recent_cpu/nice haven't changed
 
-Possible Improvements: I would further optimize the recalculation intervals and explore minimizing
-the impact on performance by reducing the frequency of recalculations or offloading them to another process.
+Potential improvements:
+Implement a priority queue data structure for better scheduling efficiency
+Add overflow checking for fixed-point calculations
+
 
 >> C6: The assignment explains arithmetic for fixed-point math in
 >> detail, but it leaves it open to you to implement it.  Why did you
@@ -264,9 +314,12 @@ the impact on performance by reducing the frequency of recalculations or offload
 >> type and/or a set of functions or macros to manipulate fixed-point
 >> numbers, why did you do so?  If not, why not?
 
-I implemented fixed-point arithmetic by creating an abstraction layer with helper functions to handle 
-common operations (e.g., multiplication and division). This decision was made to ensure reusability across
-different parts of the scheduler and to minimize errors when manipulating fixed-point numbers.
+Using macros for fixed-point arithmetic ensures code clarity and minimizes errors. The abstraction makes the implementation reusable and reduces the chance of arithmetic mistakes.
+
+An abstraction layer (like macros) simplifies complex operations and keeps the code readable.
+Fixed-point math is prone to rounding issues, so a consistent abstraction reduces the chance of inconsistencies.
+
+Macros avoid the overhead of function calls and keep critical arithmetic operations fast, which is crucial for real-time systems like schedulers.
 
 
 
